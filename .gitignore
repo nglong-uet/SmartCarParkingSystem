@@ -1,0 +1,12 @@
+# Ignore MySQL data
+mysql/data/
+mysql/logs/
+mysql/tmp/
+
+# Ignore Mosquitto runtime logs
+mosquitto/log/
+
+# Ignore compiled binaries
+*.sock
+*.pid
+*.log

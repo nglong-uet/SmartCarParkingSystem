@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  mosquitto:
+    image: eclipse-mosquitto:2
+    container_name: mosquitto_broker
+    network_mode: host
+    restart: unless-stopped
+    ports:
+      - "1883:1883"   # MQTT
+      - "9001:9001"   # WebSocket (nếu có)
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf
+      - ./mosquitto/data:/mosquitto/data
+      - ./mosquitto/log:/mosquitto/log
+
+  mysql:
+    image: mysql:8.0
+    container_name: mysql_server
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: parking_system
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./mysql/data:/var/lib/mysql
