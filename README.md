@@ -189,7 +189,10 @@ SMARTPARKING/
 
 ## 🧪 Hướng dẫn chạy hệ thống
 ### 1️⃣ MQTT Broker (Mosquitto)
+Khởi động Docker
+Vào VS Code, mở terminal chạy lệnh sau:
 ```bash
+cd mosquitto
 docker compose up -d
 ```
 
@@ -201,6 +204,7 @@ Broker chạy cổng:
 ---
 
 ### 2️⃣ ESP8266 Gate
+* Sửa lại ssid, pass, MQTT_SERVER theo máy
 * Nạp code `ESP8266_Gate`
 * Kết nối:
   * RFID RC522
@@ -213,6 +217,7 @@ Broker chạy cổng:
 ---
 
 ### 3️⃣ ESP8266 Sensors
+* Sửa lại ssid, pass, MQTT_SERVER theo máy
 * Nạp code `ESP8266_Sensors`
 * Kết nối:
   * LCD I2C
