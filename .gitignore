@@ -1,12 +1,18 @@
-# Ignore MySQL data
-mysql/data/
-mysql/logs/
-mysql/tmp/
+# ===== PlatformIO =====
+.pio/
+.vscode/
 
-# Ignore Mosquitto runtime logs
-mosquitto/log/
+# ===== Build files =====
+*.bin
+*.elf
+*.hex
 
-# Ignore compiled binaries
-*.sock
-*.pid
+# ===== OS =====
+.DS_Store
+Thumbs.db
+
+# ===== Logs =====
 *.log
+
+# ===== Secrets =====
+.env
