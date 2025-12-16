@@ -5,27 +5,22 @@ import { ref, onValue } from "firebase/database";
 import ParkingSlot from "../components/ParkingSlot";
 import { Colors } from "../constants/colors";
 
-const TOTAL_SLOTS = 4;
+type SlotData = {
+  occupied: boolean;
+  uid?: string;
+  time?: string;
+};
 
 export default function SlotsScreen() {
-  const [cars, setCars] = useState<any[]>([]);
+  const [slots, setSlots] = useState<Record<string, SlotData>>({});
 
   useEffect(() => {
-    const insideRef = ref(db, "parking/inside");
+    const slotRef = ref(db, "parking/slots");
 
-    return onValue(insideRef, (snap) => {
-      if (!snap.exists()) {
-        setCars([]);
-        return;
+    return onValue(slotRef, (snap) => {
+      if (snap.exists()) {
+        setSlots(snap.val());
       }
-
-      const data = snap.val();
-      const arr = Object.keys(data).map((uid) => ({
-        uid,
-        time: data[uid].time,
-      }));
-
-      setCars(arr);
     });
   }, []);
 
@@ -34,17 +29,18 @@ export default function SlotsScreen() {
       <Text style={styles.title}>Bãi đỗ xe</Text>
 
       <View style={styles.grid}>
-        {Array.from({ length: TOTAL_SLOTS }).map((_, i) => {
-          const car = cars[i];
+        {Object.entries(slots).map(([key, slot]) => {
+          const slotNumber = Number(key.replace("slot", ""));
           return (
             <ParkingSlot
-              key={i}
-              slot={i + 1}
-              occupied={!!car}
-              uid={car?.uid}
+              key={key}
+              slot={slotNumber}
+              occupied={slot.occupied}
+              uid={slot.uid}
             />
           );
-        })}
+        })
+        }
       </View>
     </View>
   );

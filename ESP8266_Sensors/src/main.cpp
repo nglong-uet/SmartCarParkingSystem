@@ -2,9 +2,10 @@
 #include <PubSubClient.h>
 #include <Firebase_ESP_Client.h>
 #include <LiquidCrystal_I2C.h>
-#include <NTPClient.h>  // Thêm cho NTP(Network Time Protocol)
-#include <WiFiUdp.h>    // Thêm cho NTP
+#include <WiFiUdp.h>
+#include <NTPClient.h>
 
+// CONFIG
 #define API_KEY "AIzaSyBBDd6RMSbYOniIWalNi5MUHo2ACG2b_mo"
 #define DATABASE_URL "https://smartparkingsystem-f8fdb-default-rtdb.asia-southeast1.firebasedatabase.app"
 
@@ -12,62 +13,61 @@ const char *ssid = "Duc Long";
 const char *pass = "18092004";
 const char *MQTT_SERVER = "172.20.10.3";
 
+// OBJECT
 WiFiClient espClient;
 PubSubClient mqtt(espClient);
-
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// IR slot mapping
 int IR[4] = {D5, D6, D7, D0};
 
+// NTP (Network Time Protocol)
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "pool.ntp.org", 25200);  // UTC+7 cho VN, adjust offset
+NTPClient timeClient(ntpUDP, "pool.ntp.org", 25200); // UTC+7
 
-unsigned long reconnectTime = 0;
-unsigned long lastDisplayTime = 0;
-unsigned long tempDisplayStart = 0;
-bool showingTempMessage = false;
-String tempMessageLine1 = "";
-String tempMessageLine2 = "";
+unsigned long lastLCD = 0;
+bool tempMsg = false;
+unsigned long tempStart = 0;
 
+// TIME
 String now() {
   timeClient.update();
-  unsigned long epoch = timeClient.getEpochTime();
-  if (epoch == 0) return "Time error";  // Handle NTP fail
-  int hours = (epoch / 3600) % 24;
-  int mins = (epoch / 60) % 60;
-  int secs = epoch % 60;
-  char buf[32];
-  sprintf(buf, "%02d:%02d:%02d", hours, mins, secs);
+  time_t t = timeClient.getEpochTime();
+  char buf[16];
+  sprintf(buf, "%02d:%02d:%02d", hour(t), minute(t), second(t));
   return String(buf);
 }
 
+// SLOT LOGIC
+int findEmptySlot() {
+  for (int i = 1; i <= 4; i++) {
+    String path = "/parking/slots/slot" + String(i) + "/occupied";
+    if (Firebase.RTDB.getBool(&fbdo, path)) {
+      if (!fbdo.boolData()) return i;
+    }
+  }
+  return -1;
+}
+
+int findSlotByUID(String uid) {
+  for (int i = 1; i <= 4; i++) {
+    String path = "/parking/slots/slot" + String(i) + "/uid";
+    if (Firebase.RTDB.getString(&fbdo, path)) {
+      if (fbdo.stringData() == uid) return i;
+    }
+  }
+  return -1;
+}
+
+// FIREBASE
 bool cardActive(String uid) {
   uid.replace(" ", "_");
-  if (Firebase.RTDB.getBool(&fbdo, "/cards/" + uid + "/active")) {
-    if (fbdo.dataType() == "boolean") return fbdo.boolData();
-    else Serial.println("Firebase error: Wrong type for active");
-  } else {
-    Serial.println("Firebase get active failed: " + fbdo.errorReason());
-  }
-  return false;
-}
-
-bool inside(String uid) {
-  uid.replace(" ", "_");
-  if (Firebase.RTDB.get(&fbdo, "/parking/inside/" + uid)) {
-    return fbdo.dataType() != "null";
-  } else {
-    Serial.println("Firebase get inside failed: " + fbdo.errorReason());
-  }
-  return false;
-}
-
-bool slotAvailable() {
-  for (int i = 0; i < 4; i++)
-    if (digitalRead(IR[i]) == HIGH) return true;
+  if (Firebase.RTDB.getBool(&fbdo, "/cards/" + uid + "/active"))
+    return fbdo.boolData();
   return false;
 }
 
@@ -77,127 +77,124 @@ void logEvent(String uid, String act, String st) {
   j.set("action", act);
   j.set("status", st);
   j.set("time", now());
-  if (!Firebase.RTDB.pushJSON(&fbdo, "/logs", &j)) {
-    Serial.println("Firebase log failed: " + fbdo.errorReason());
-  }
+  Firebase.RTDB.pushJSON(&fbdo, "/logs", &j);
 }
 
-void displaySlots() {
+// LCD
+void showSlots() {
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Slots: ");
   for (int i = 0; i < 4; i++) {
-    char status = (digitalRead(IR[i]) == HIGH) ? 'E' : 'F';
-    lcd.print(String(i + 1) + status + " ");
+    char s = (digitalRead(IR[i]) == HIGH) ? 'E' : 'F';
+    lcd.print(String(i + 1) + s + " ");
   }
-  // Dòng 2 có thể hiển thị time hoặc gì đó nếu cần
   lcd.setCursor(0, 1);
   lcd.print(now());
 }
 
-void showTempMessage(String line1, String line2, unsigned long duration) {
+void showTemp(String l1, String l2) {
   lcd.clear();
   lcd.setCursor(0, 0);
-  lcd.print(line1.substring(0, 16));  // Cắt nếu dài hơn 16 char
+  lcd.print(l1.substring(0, 16));
   lcd.setCursor(0, 1);
-  lcd.print(line2.substring(0, 16));
-  tempDisplayStart = millis();
-  showingTempMessage = true;
-  tempMessageLine1 = line1;
-  tempMessageLine2 = line2;
+  lcd.print(l2.substring(0, 16));
+  tempMsg = true;
+  tempStart = millis();
 }
 
+// MQTT
 void onRequest(char *t, byte *p, unsigned int l) {
   String msg;
   for (uint i = 0; i < l; i++) msg += (char)p[i];
 
   int s = msg.indexOf(':');
   if (s == -1) return;
+
   String act = msg.substring(0, s);
   String uid = msg.substring(s + 1);
-  uid.replace(" ", "_");  // Replace nhất quán ngay đầu
+  uid.replace(" ", "_");
 
-  Serial.println("Request: " + act + " for UID: " + uid);
+  Serial.println("REQ: " + act + " - " + uid);
 
-  String status = "NO";
-  bool isValid = cardActive(uid);
-
-  if (isValid) {
-    if (act == "ENTRY") {
-      if (slotAvailable() && !inside(uid)) {
-        if (Firebase.RTDB.setString(&fbdo, "/parking/inside/" + uid + "/time", now())) {
-          if (mqtt.publish("parking/response", (uid + ":OK").c_str())) {
-            logEvent(uid, "ENTRY", "OK");
-            status = "OK";
-          } else Serial.println("Publish OK failed");
-        } else {
-          Serial.println("Firebase set inside failed: " + fbdo.errorReason());
-        }
-      } else {
-        if (mqtt.publish("parking/response", (uid + ":NO").c_str())) {
-          logEvent(uid, "ENTRY", "NO");
-        } else Serial.println("Publish NO failed");
-      }
-    } else if (act == "EXIT") {
-      if (inside(uid)) {
-        if (Firebase.RTDB.deleteNode(&fbdo, "/parking/inside/" + uid)) {
-          if (mqtt.publish("parking/response", (uid + ":OK").c_str())) {
-            logEvent(uid, "EXIT", "OK");
-            status = "OK";
-          } else Serial.println("Publish OK failed");
-        } else {
-          Serial.println("Firebase delete failed: " + fbdo.errorReason());
-        }
-      } else {
-        if (mqtt.publish("parking/response", (uid + ":NO").c_str())) {
-          logEvent(uid, "EXIT", "NO");
-        } else Serial.println("Publish NO failed");
-      }
-    }
-  } else {
-    if (mqtt.publish("parking/response", (uid + ":NO").c_str())) {
-      logEvent(uid, act, "NO");
-    } else Serial.println("Publish NO failed");
+  if (!cardActive(uid)) {
+    mqtt.publish("parking/response", (uid + ":NO").c_str());
+    logEvent(uid, act, "NO");
+    showTemp("UID: " + uid, "Khong hop le");
+    return;
   }
 
-  // Hiển thị UID và hợp lệ (OK/NO)
-  String validity = (status == "OK") ? "Hop le" : "Khong hop le";
-  showTempMessage("UID: " + uid, validity, 3000);  // Hiển thị 3 giây
+  if (act == "ENTRY") {
+    int slot = findEmptySlot();
+if (slot == -1 || digitalRead(IR[slot - 1]) == LOW) {
+  mqtt.publish("parking/response", (uid + ":NO").c_str());
+  logEvent(uid, "ENTRY", "NO");
+  showTemp("Bai day", "Tu choi");
+  return;
+}
+
+    String base = "/parking/slots/slot" + String(slot);
+    Firebase.RTDB.setBool(&fbdo, base + "/occupied", true);
+    Firebase.RTDB.setString(&fbdo, base + "/uid", uid);
+    Firebase.RTDB.setString(&fbdo, base + "/time", now());
+
+    mqtt.publish("parking/response", (uid + ":OK").c_str());
+    logEvent(uid, "ENTRY", "OK");
+    showTemp("Xe vao slot", String(slot));
+  }
+
+  if (act == "EXIT") {
+    int slot = findSlotByUID(uid);
+if (slot == -1) {
+  mqtt.publish("parking/response", (uid + ":NO").c_str());
+  showTemp("Khong tim thay", "UID");
+  return;
+}
+
+if (digitalRead(IR[slot - 1]) == LOW) {
+  mqtt.publish("parking/response", (uid + ":WAIT").c_str());
+  logEvent(uid, "EXIT", "WAIT");
+  showTemp("Xe chua roi", "Slot " + String(slot));
+  return;
+}
+
+    String base = "/parking/slots/slot" + String(slot);
+    Firebase.RTDB.setBool(&fbdo, base + "/occupied", false);
+    Firebase.RTDB.deleteNode(&fbdo, base + "/uid");
+    Firebase.RTDB.deleteNode(&fbdo, base + "/time");
+
+    mqtt.publish("parking/response", (uid + ":OK").c_str());
+    logEvent(uid, "EXIT", "OK");
+    showTemp("Xe ra slot", String(slot));
+  }
 }
 
 void mqttCallback(char *t, byte *p, unsigned int l) {
-  if (String(t) == "parking/request") onRequest(t, p, l);
+  if (String(t) == "parking/request")
+    onRequest(t, p, l);
 }
 
 void mqttReconnect() {
-  if (millis() - reconnectTime > 5000) {
-    reconnectTime = millis();
-    if (mqtt.connect("esp2")) {
-      mqtt.subscribe("parking/request");
-      Serial.println("MQTT reconnected");
-    } else {
-      Serial.println("MQTT reconnect failed");
-    }
+  if (!mqtt.connected()) {
+    mqtt.connect("esp2");
+    mqtt.subscribe("parking/request");
   }
 }
 
+// SETUP
 void setup() {
   Serial.begin(115200);
-  for (int i = 0; i < 4; i++) pinMode(IR[i], INPUT_PULLUP);
+
+  for (int i = 0; i < 4; i++)
+    pinMode(IR[i], INPUT_PULLUP);
 
   lcd.init();
   lcd.backlight();
 
   WiFi.begin(ssid, pass);
-  unsigned long wifiStart = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - wifiStart < 10000) {
-    delay(200);
-    Serial.print(".");
-  }
-  if (WiFi.status() == WL_CONNECTED) Serial.println("WiFi connected");
-  else Serial.println("WiFi connect failed");
+  while (WiFi.status() != WL_CONNECTED) delay(200);
 
-  timeClient.begin();  // Khởi động NTP
+  timeClient.begin();
 
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
@@ -206,22 +203,40 @@ void setup() {
   mqtt.setServer(MQTT_SERVER, 1883);
   mqtt.setCallback(mqttCallback);
 
-  displaySlots();  // Hiển thị ban đầu
+  showSlots();
 }
 
+// LOOP
 void loop() {
+static bool lastIR[4] = {1, 1, 1, 1};
+
+for (int i = 0; i < 4; i++) {
+  bool cur = digitalRead(IR[i]);
+
+  if (cur != lastIR[i]) {
+    String base = "/parking/slots/slot" + String(i + 1) + "/uid";
+
+    if (!Firebase.RTDB.getString(&fbdo, base) || fbdo.stringData() == "") {
+      Firebase.RTDB.setBool(
+        &fbdo,
+        "/parking/slots/slot" + String(i + 1) + "/occupied",
+        cur == LOW
+      );
+    }
+    lastIR[i] = cur;
+  }
+}
+
   if (!mqtt.connected()) mqttReconnect();
   mqtt.loop();
 
-  // Cập nhật hiển thị slots mỗi 1 giây nếu không có temp message
-  if (!showingTempMessage && millis() - lastDisplayTime > 1000) {
-    displaySlots();
-    lastDisplayTime = millis();
+  if (!tempMsg && millis() - lastLCD > 1000) {
+    showSlots();
+    lastLCD = millis();
   }
 
-  // Kiểm tra nếu hết thời gian hiển thị temp, quay về slots
-  if (showingTempMessage && millis() - tempDisplayStart > 3000) {
-    showingTempMessage = false;
-    displaySlots();
+  if (tempMsg && millis() - tempStart > 3000) {
+    tempMsg = false;
+    showSlots();
   }
 }
